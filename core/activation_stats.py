@@ -24,12 +24,25 @@ import torch.nn as nn
 
 class ActivationStatsCollector:
     """Incrementally accumulates the per-input-channel normalized-mean
-    activation statistic (X_bar) for a single layer, batch by batch."""
+    activation statistic (X_bar) for a single layer, batch by batch.
 
-    def __init__(self, eps: float = 1e-8):
+    Optionally also retains the raw (concatenated) activation tensor, for
+    callers that need the actual calibration activations -- e.g. BLC's
+    true objective E = ||WX - (Wr+Wq)X|| (Eq. 12) needs X itself, not just
+    its normalized-mean summary. This is opt-in (`keep_raw=True`) since it
+    defeats the "don't cache full activations" memory-saving purpose of
+    this collector when enabled; the intended use is enabling it only for
+    the small, per-block calibration batches processed at any one time
+    during sequential model quantization (see runner/quantize_model.py),
+    not for the whole model at once.
+    """
+
+    def __init__(self, eps: float = 1e-8, keep_raw: bool = False):
         self.eps = eps
+        self.keep_raw = keep_raw
         self._sum: torch.Tensor | None = None  # (n,), running sum of normalized rows
         self._count: int = 0
+        self._raw_chunks: list[torch.Tensor] = []
 
     @torch.no_grad()
     def update(self, X: torch.Tensor) -> None:
@@ -47,6 +60,9 @@ class ActivationStatsCollector:
         self._sum = batch_sum if self._sum is None else self._sum + batch_sum
         self._count += X_flat.shape[0]
 
+        if self.keep_raw:
+            self._raw_chunks.append(X_flat.clone())
+
     def x_bar(self) -> torch.Tensor:
         """Return the accumulated per-channel normalized mean, shape (n,)."""
         if self._count == 0 or self._sum is None:
@@ -56,6 +72,18 @@ class ActivationStatsCollector:
             )
         return self._sum / self._count
 
+    def raw(self) -> torch.Tensor:
+        """Return the concatenated raw activations, shape (total_tokens, n).
+        Requires `keep_raw=True` at construction."""
+        if not self.keep_raw:
+            raise RuntimeError("raw() requires ActivationStatsCollector(keep_raw=True)")
+        if not self._raw_chunks:
+            raise RuntimeError(
+                "ActivationStatsCollector.raw() called with no activations "
+                "collected yet -- run a calibration forward pass first."
+            )
+        return torch.cat(self._raw_chunks, dim=0)
+
     @property
     def num_tokens_seen(self) -> int:
         return self._count
@@ -63,6 +91,7 @@ class ActivationStatsCollector:
     def reset(self) -> None:
         self._sum = None
         self._count = 0
+        self._raw_chunks = []
 
 
 class CalibrationHookManager:
@@ -83,6 +112,7 @@ class CalibrationHookManager:
         model: nn.Module,
         layer_names: set[str] | None = None,
         eps: float = 1e-8,
+        keep_raw: bool = False,
     ):
         """
         Args:
@@ -91,10 +121,14 @@ class CalibrationHookManager:
                 fully-qualified name (as from `model.named_modules()`) is
                 in this set. If None, hook every `nn.Linear`.
             eps: forwarded to each layer's `ActivationStatsCollector`.
+            keep_raw: forwarded to each layer's `ActivationStatsCollector`
+                -- retains raw activation tensors, not just X_bar. See
+                that class's docstring for the memory-usage caveat.
         """
         self.model = model
         self.layer_names = layer_names
         self.eps = eps
+        self.keep_raw = keep_raw
         self.collectors: dict[str, ActivationStatsCollector] = {}
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
 
@@ -104,7 +138,7 @@ class CalibrationHookManager:
                 continue
             if self.layer_names is not None and name not in self.layer_names:
                 continue
-            collector = ActivationStatsCollector(eps=self.eps)
+            collector = ActivationStatsCollector(eps=self.eps, keep_raw=self.keep_raw)
             self.collectors[name] = collector
             handle = module.register_forward_pre_hook(self._make_hook(collector))
             self._handles.append(handle)
