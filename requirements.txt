@@ -1,3 +1,4 @@
 torch==2.13.0
 # OPT integration
 transformers[torch]==5.15.0
+datasets==5.0.1
