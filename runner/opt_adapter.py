@@ -141,6 +141,7 @@ def quantize_opt_model(
     input_ids: torch.Tensor,
     bits: int,
     attention_mask: torch.Tensor | None = None,
+    device: torch.device | str | None = None,
     **quantize_kwargs: Any,
 ):
     """Quantize every decoder layer's q/k/v/o/fc1/fc2 projections in an
@@ -151,6 +152,14 @@ def quantize_opt_model(
         input_ids: calibration token ids, shape (batch, seq_len).
         bits: target quantization bit-width.
         attention_mask: optional, forwarded to the initial embedding pass.
+        device: if given, moves `model`, `input_ids`, and `attention_mask`
+            there before quantizing (e.g. "cuda", "mps", "cpu"). If
+            `quantize_kwargs` includes a `generator`, it is automatically
+            re-created on `device` (preserving its seed) if it isn't
+            already there -- see `runner/device_utils.py` for why this
+            matters: a CPU `torch.Generator` cannot be used for sampling
+            ops on a CUDA/MPS tensor and would otherwise raise a
+            device-mismatch error deep inside R1-Sketch.
         **quantize_kwargs: forwarded to
             `runner.quantize_model.quantize_blocks_sequential` (dfp, x, t,
             it, group_size, epochs, generator, ...).
@@ -159,7 +168,17 @@ def quantize_opt_model(
         SequentialQuantResult (see runner/quantize_model.py) with
         per-layer statistics.
     """
+    from runner.device_utils import move_to_device, resolve_generator_device
     from runner.quantize_model import quantize_blocks_sequential
+
+    if device is not None:
+        model = model.to(device)
+        input_ids = move_to_device(input_ids, device)
+        attention_mask = move_to_device(attention_mask, device)
+        if "generator" in quantize_kwargs:
+            quantize_kwargs["generator"] = resolve_generator_device(
+                quantize_kwargs["generator"], device
+            )
 
     hidden_states, block_kwargs = capture_initial_hidden_states(
         model, input_ids, attention_mask=attention_mask

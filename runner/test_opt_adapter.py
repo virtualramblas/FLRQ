@@ -195,6 +195,57 @@ def test_quantize_opt_model_with_batch_and_multiple_layers():
     print(result.summary())
 
 
+def test_quantize_opt_model_accepts_device_argument():
+    """Exercises the device= code path end-to-end (on CPU, since that's
+    all this sandbox has) -- moves model/input_ids/generator through
+    device="cpu" explicitly, and checks the result matches calling
+    without device= at all (a no-op on this hardware, but verifies the
+    plumbing doesn't change behavior or break)."""
+    torch.manual_seed(7)
+    model_a = load_opt(_tiny_opt_config(num_layers=2))
+    model_a.eval()
+    model_b = load_opt(_tiny_opt_config(num_layers=2))
+    model_b.load_state_dict(model_a.state_dict())
+    model_b.eval()
+    ids = torch.randint(0, 200, (2, 10))
+
+    result_no_device = quantize_opt_model(
+        model_a, ids, bits=4, x=0.3, epochs=3, generator=_seeded_gen(11),
+    )
+    result_with_device = quantize_opt_model(
+        model_b, ids, bits=4, x=0.3, epochs=3, generator=_seeded_gen(11),
+        device="cpu",
+    )
+
+    assert [s.rank for s in result_no_device.layer_stats] == [
+        s.rank for s in result_with_device.layer_stats
+    ]
+    for layer_a, layer_b in zip(get_opt_decoder_layers(model_a), get_opt_decoder_layers(model_b)):
+        for name, lin_a in opt_linear_selector(layer_a).items():
+            lin_b = opt_linear_selector(layer_b)[name]
+            assert torch.allclose(lin_a.weight.data, lin_b.weight.data)
+            assert lin_b.weight.data.device == torch.device("cpu")
+
+
+def test_quantize_opt_model_moves_generator_to_requested_device():
+    """A CPU-created generator passed alongside device="cpu" should be
+    used as-is (same device, no mismatch) -- this is the no-mismatch
+    branch of resolve_generator_device, verified live through the public
+    quantize_opt_model API rather than by calling the utility directly."""
+    torch.manual_seed(8)
+    model = load_opt(_tiny_opt_config(num_layers=1))
+    model.eval()
+    ids = torch.randint(0, 200, (2, 8))
+    gen = torch.Generator()
+    gen.manual_seed(42)
+
+    result = quantize_opt_model(
+        model, ids, bits=4, x=0.3, epochs=2, generator=gen, device="cpu",
+    )
+    assert len(result.layer_stats) == 6
+    assert not torch.isnan(get_opt_decoder_layers(model)[0].fc1.weight.data).any()
+
+
 if __name__ == "__main__":
     if not _HAS_TRANSFORMERS:
         print("SKIPPED: transformers not installed")
@@ -206,6 +257,8 @@ if __name__ == "__main__":
         test_capture_initial_hidden_states_matches_real_forward,
         test_quantize_opt_model_end_to_end,
         test_quantize_opt_model_with_batch_and_multiple_layers,
+        test_quantize_opt_model_accepts_device_argument,
+        test_quantize_opt_model_moves_generator_to_requested_device,
     ]
     failures = 0
     for t in tests:
