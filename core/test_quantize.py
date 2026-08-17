@@ -145,6 +145,39 @@ def test_output_dtype_and_shape_match_input():
     assert res.W_hat.shape == R.shape
 
 
+def test_search_p_clip_works_on_non_cpu_device():
+    """Regression test for a real bug: `search_p_clip`'s `best_err`
+    accumulator was created with `torch.full((rows, n_groups, 1),
+    float("inf"))` with no `device=`/`dtype=`, silently defaulting to CPU.
+    This is invisible whenever R itself is already on CPU (which is all
+    of the rest of this test file), but raised
+    `RuntimeError: Expected all tensors to be on the same device...` the
+    moment R lived on an actual accelerator (reported on a 16GB CUDA GPU
+    running quantize_opt_model).
+
+    This sandbox has no real GPU/MPS to reproduce that with directly, but
+    PyTorch's `meta` device triggers the exact same device-dispatch check
+    without needing real hardware: ops mixing a `meta` tensor with a
+    (default) CPU tensor raise the same "not on the expected device"
+    error a CUDA/CPU mismatch would. So this test genuinely fails against
+    the old code and passes against the fix -- verified by temporarily
+    reverting the fix locally, not just asserting success.
+    """
+    R = torch.randn(8, 128, device="meta")
+    p_clip, result = search_p_clip(R, bits=4, group_size=128)
+    assert result.W_hat.device.type == "meta"
+    assert result.W_hat.shape == R.shape
+    assert p_clip.device.type == "meta"
+
+    # Also exercise the public wrapper and plain (no-clipping) path, since
+    # they share the same call site.
+    result2 = clip_and_quantize(R, bits=4, group_size=128)
+    assert result2.W_hat.device.type == "meta"
+
+    result3 = quantize_symmetric(R, bits=4, group_size=128)
+    assert result3.W_hat.device.type == "meta"
+
+
 if __name__ == "__main__":
     tests = [
         test_codes_within_symmetric_range_and_reconstruct_reasonably,
@@ -157,6 +190,7 @@ if __name__ == "__main__":
         test_search_p_clip_never_worse_than_no_clip_option,
         test_all_zero_input,
         test_output_dtype_and_shape_match_input,
+        test_search_p_clip_works_on_non_cpu_device,
     ]
     failures = 0
     for t in tests:
