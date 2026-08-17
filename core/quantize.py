@@ -181,7 +181,9 @@ def search_p_clip(
     grouped, n_groups, orig_cols = _group_view(R_c, group_size)
     group_amax = grouped.abs().amax(dim=2, keepdim=True)  # (rows, n_groups, 1)
 
-    best_err = torch.full((rows, n_groups, 1), float("inf"))
+    best_err = torch.full(
+        (rows, n_groups, 1), float("inf"), dtype=grouped.dtype, device=grouped.device
+    )
     best_p = group_amax.clone()
 
     for pct in percentiles:
