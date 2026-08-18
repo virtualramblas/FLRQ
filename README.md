@@ -3,7 +3,7 @@
 A from-scratch PyTorch implementation of **FLRQ** (Gu, Hu, Niu & Liu,
 *"FLRQ: Faster LLM Quantization with Flexible Low-Rank Matrix Sketching"*,
 AAAI 2026, [arXiv:2601.05684](https://arxiv.org/abs/2601.05684)), targeting
-OPT-1.3B.
+[OPT-1.3B](https://huggingface.co/facebook/opt-1.3b).
 
 FLRQ combines two ideas to post-training-quantize LLM weights to low bit
 widths (down to INT2) with minimal accuracy loss:
@@ -129,8 +129,8 @@ model is exactly the textbook uniform-predictor result, `PPL = vocab_size`
 
 ```bash
 pip install torch transformers
-cd FLRQ
-for f in tests/test_*.py; do python3 "$f"; done
+cd FLRQ/<package_name>
+for f in test_*.py; do python3 "$f"; done
 ```
 
 Each test file is also directly runnable and self-reporting (no `pytest`
